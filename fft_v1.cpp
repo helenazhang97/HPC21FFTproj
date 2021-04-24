@@ -24,11 +24,11 @@
 
 using namespace std::complex_literals;
 
-double printError(std::complex<double> *fkref,std::complex<double> *fk , int N){
+double printError(std::complex<double> *fk,fftw_complex *result, int N){
 	double err=0.0;
-	#pragma omp parallel for default(none) shared(N,fkref,fk) reduction(+:err)
+	#pragma omp parallel for default(none) shared(N,fk,result) reduction(+:err)
 	for (int j=0;j<N;j++){
-		err+=abs(fkref[j]-fk[j])* abs(fkref[j]-fk[j]);
+		err+=(real(fk[j])-result[j][0])* (real(fk[j])-result[j][0])+(imag(fk[j])-result[j][1])* (imag(fk[j])-result[j][1]);
 	}
 	return sqrt(err);
 }
@@ -38,7 +38,7 @@ void naiveFFT( std::complex<double> *fx,std::complex<double> *fk, int N){
 	std::complex<double> * FN    = (std::complex<double> *) calloc(2*sizeof(double), N*N	);
 	for (int j=0;j<N;j++){
 		for (int k=0;k<N;k++){
-			std::complex<double> z = -1i*(2.0*M_PI/N*j*k);
+			std::complex<double> z = 1i*(2.0*M_PI/N*j*k);
 			FN[j+k*N]=exp(z);
 		}
 	}
@@ -133,7 +133,7 @@ void getind(int m,int s,int j, int &ind1,int &ind2,int &indw, int *binm1, int *v
 }
 
 //FFT on single core without use of MPI
-void fastFT_iter(std::complex<double> *fx,int s,int N,int *binm1,int *vec2pow){
+void fastFT_iter(std::complex<double> *fx, int s,int N,int *binm1,int *vec2pow){
 	std::complex<double> logomega =2*M_PI/N*(1i),x,w,t0,t1;
 	for(int j=0;j<s;j++){
 		for(int k=0;k<N/2;k++){
@@ -147,7 +147,7 @@ void fastFT_iter(std::complex<double> *fx,int s,int N,int *binm1,int *vec2pow){
 			fx[indt1]=t0-x;
 		}
 	}
-
+	
 }
 
 
@@ -171,6 +171,16 @@ int bin2dec(int *bin, int len){
 		dec+=bin[j]*ipow(2,len-j-1);
 	}
 	return dec;	
+}
+
+void Reorder_fk(std::complex<double> *fk,std::complex<double> *fx,int N,int s){
+	int *bin=(int*)calloc(sizeof(int),s);
+	int *bin_inv=(int*)calloc(sizeof(int),s);
+	for(int ind=0;ind<N;ind++){
+		dec2bin(bin,s,ind);
+		for(int ss=0;ss<s;ss++){bin_inv[ss]=bin[s-1-ss];}
+		fk[bin2dec(bin_inv,s)]=fx[ind];
+	}
 }
 
 
@@ -222,7 +232,9 @@ int main(int argc, char * argv[]) {
 	int logp=(int)(log(p)/log(2)+0.5);
 	printf("N=%d, p=%d, logp=%d\n",N,p,logp);
 	std::complex<double> * fx    = (std::complex<double> *) calloc(2*sizeof(double), N	);
+	std::complex<double> * fk    = (std::complex<double> *) calloc(2*sizeof(double), N	);
 	std::complex<double> * fxcopy    = (std::complex<double> *) calloc(2*sizeof(double), N	);
+	std::complex<double> * fkcopy    = (std::complex<double> *) calloc(2*sizeof(double), N	);
 	std::complex<double> * sendbuffer   = (std::complex<double> *) calloc(2*sizeof(double), lN	);
 	std::complex<double> * recvbuffer   = (std::complex<double> *) calloc(2*sizeof(double), lN	);
 
@@ -245,48 +257,7 @@ int main(int argc, char * argv[]) {
 		fx[j]=sin(2*j)+cos(3*j)*1i;
 		fxcopy[j]=fx[j];
 	}
-
-	if(mpirank==0){
-		fftw_complex signal[N];
-		fftw_complex result[N];
-
-		fftw_plan plan=fftw_plan_dft_1d(N,signal,result,FFTW_BACKWARD,FFTW_ESTIMATE);
-		for(int j=0;j<N;j++){
-			fx[j]=sin(2*j)+cos(3*j)*1i;
-			signal[j][0]=real(fx[j]);
-			signal[j][1]=imag(fx[j]);
-		}
-		std::complex<double> * fk    = (std::complex<double> *) calloc(2*sizeof(double), N	);
-		naiveFFT(fx,fk,N);
-
-		printf("fk=");
-		for(int j=0;j<N;j++){
-			printf("%+.2f%+.2fi ",real(fk[j]),imag(fk[j]));
-		}
-		printf("\n");
-		free(fk);
-
-		fftw_execute(plan);
-		printf("fftw result=");
-		for(int j=0;j<N;j++){
-			printf("%+.2f%+.2f ",result[j][0],result[j][1]);}printf("\n");
-		fftw_destroy_plan(plan);
-	}
-	
-	
-	
-	
-	
-	
-	double t,tsingle;
-
-	//implement non-parallel FFT on single core 0
-	if (mpirank==0){
-		tsingle = omp_get_wtime();
-		fastFT_iter(fxcopy,s,N,binm1,vec2pow);
-		tsingle=omp_get_wtime() - tsingle;
-	}
-
+	double t;
 	MPI_Barrier(MPI_COMM_WORLD);
 	//FFT using multiple core MPI 
 	t=omp_get_wtime();
@@ -358,29 +329,70 @@ int main(int argc, char * argv[]) {
 	
 //	printf("rank=%d ",mpirank);for(int k=mpirank*lN;k<(mpirank+1)*lN;k++) printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));printf("\n");
 	MPI_Gather(sendbuffer,lN, MPI_C_DOUBLE_COMPLEX, fx,lN,MPI_C_DOUBLE_COMPLEX,0,MPI_COMM_WORLD);
-	t=omp_get_wtime() - t;
-
+	
+	double tmpi=omp_get_wtime() - t;
 	if(mpirank==0)
 	{
-
-		printf("single core fxcopy=");
+		//standard fftw3 library
+		fftw_complex signal[N];
+		fftw_complex result[N];
+		fftw_plan plan=fftw_plan_dft_1d(N,signal,result,FFTW_BACKWARD,FFTW_ESTIMATE);
 		for(int j=0;j<N;j++){
-			printf("%+.2f%+.2fi ",real(fxcopy[j]),imag(fxcopy[j]));
+			signal[j][0]=sin(2*j);
+			signal[j][1]=cos(3*j);
 		}
-		printf("\n");
+		t = omp_get_wtime();
+		fftw_execute(plan);
+		printf("Standard FFTW time=%6.4fs\n",omp_get_wtime() - t);
+		/*
+		printf("fftw result=");
+		for(int j=0;j<N;j++){
+			printf("%+.2f%+.2fi ",result[j][0],result[j][1]);}printf("\n");
+		/**/
+		fftw_destroy_plan(plan);
 
+		//multiple core FFT time implemented before
+		printf("Multiple core FFT time: %6.4fs, ",tmpi );
+		Reorder_fk(fk,fx,N,s);
+		/*
 		printf("fx=");
 		for(int j=0;j<N;j++){
-			printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));
+			printf("%+.2f%+.2fi ",real(fk[j]),imag(fk[j]));
 		}
 		printf("\n");
-
-		printf("single core FFT time: %6.4fs\n",tsingle );
-		printf("multiple core FFT time: %6.4fs\n",t );
-		printf("norm(fx-fxcopy)=%6.4f\n",printError(fx,fxcopy,N));
-
-
-
+		/**/
+		printf("Error(multiplecore)=%6.4f\n",printError(fk,result,N));	
+	    
+		
+		//implement non-parallel FFT on single core 0
+		t = omp_get_wtime();
+		fastFT_iter(fxcopy,s,N,binm1,vec2pow);
+		printf("Single core FFT time: %6.4fs, ",omp_get_wtime() - t );
+		Reorder_fk(fkcopy,fxcopy,N,s);
+		/*
+		printf("single core fxcopy=");
+		for(int j=0;j<N;j++){
+			printf("%+.2f%+.2fi ",real(fkcopy[j]),imag(fkcopy[j]));
+		}
+		printf("\n");
+		/**/
+		printf("Error(fksinglecore)=%6.4f\n",printError(fkcopy,result,N));	
+	
+		//naive matrix product
+		for(int j=0;j<N;j++){
+			fx[j]=sin(2*j)+cos(3*j)*1i;
+		}
+		t = omp_get_wtime();
+		naiveFFT(fx,fk,N);
+		printf("NaiveFFTtime=%6.4fs  ",omp_get_wtime() - t);
+		/*
+		printf("naivefk=");
+		for(int j=0;j<N;j++){
+			printf("%+.2f%+.2fi ",real(fk[j]),imag(fk[j]));
+		}
+		printf("\n");
+		/**/
+		printf("Error(fknaive)=%6.4f\n",printError(fk,result,N));	
 	}
 	free(binm1);
 	free(vec2pow);
@@ -406,7 +418,7 @@ int main(int argc, char * argv[]) {
 	free(recvbuffer);
 	free(fx);
 	free(fxcopy);
-//	free(fk);
-//	free(fkf);
+	free(fk);
+	free(fkcopy);
 
 }
