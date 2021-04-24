@@ -149,7 +149,7 @@ void fastFT_iter(std::complex<double> *fx,int s,int N,int *binm1,
 	//		printf("j=%d,k=%d,ind1=%d,ind2=%d,indw=%d,logomega=%+f%+fi\n",j,k,indt0,indt1,indw,real(logomega),imag(logomega));
 		}
 	
-		printf("j=%d",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
+		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
 	}
 
 }
@@ -163,6 +163,15 @@ void dec2bin(int *bin, int len, int dec){
 		k++;
 	}
 }
+int bin2dec(int *bin, int len){
+	int dec=0;
+	for (int j=0;j<len;j++){
+		dec+=bin[j]*ipow(2,len-j-1);
+	}
+	return dec;	
+}
+
+
 int main(int argc, char * argv[]) {
  	int s=4;
 	int NT=4;
@@ -222,91 +231,89 @@ int main(int argc, char * argv[]) {
 		fx[j]=sin(2*j)+cos(3*j)*1i;
 		fxcopy[j]=fx[j];
 	}
-
-
-	int *binm1=(int *) calloc(sizeof(int),s);
-	int *vec2pow=(int *) calloc(sizeof(int),s);
-	int *bindt0=(int *) calloc(sizeof(int),s);
-	int *binrank=(int *) calloc(sizeof(int),logp);
-	for (int k=0;k<s;k++){
-		vec2pow[k]=ipow(2,s-k-1);
-	}
-	if (mpirank==1){
-	fastFT_iter(fxcopy,s,N,binm1,vec2pow);
-	for(int j=0;j<N;j++)	{printf("%+.2f%+.2fi ",real(fxcopy[j]),imag(fxcopy[j]));}
-printf("\n");}
-
 	std::complex<double> logomega =2*M_PI/N*(1i),x,w,t0,t1;
+	
 	for(int j=0;j<s;j++){
-		int indt0=0, indt1=0,indw=0;
-		getind((lN*mpirank)%(N/2),s,j,indt0,indt1,indw,binm1,vec2pow);
-		if (abs(indt0-indt1)>=lN){
-			int ranksend=mpirank;
-			dec2bin(binrank,logp,mpirank);
-			binrank[j]=1-binrank[j];
-			int rankrecv=0;
-			for(int k=0;k<logp;k++){
-				rankrecv+=binrank[k]*ipow(2,logp-k-1);
-			}
-		//	printf("j=%d, indt0=%d, indt1=%d,ranksend=%d,rankrecv=%d\n",j,indt0,indt1,ranksend,rankrecv);
-			for (int k=0;k<lN;k++){
-				sendbuffer[k]=fx[lN*ranksend+k];
-				recvbuffer[k]=0.0;
-			}
-			MPI_Sendrecv(sendbuffer,lN,MPI_C_DOUBLE_COMPLEX,rankrecv,123,recvbuffer,lN,MPI_C_DOUBLE_COMPLEX,rankrecv,123,MPI_COMM_WORLD,&status);
-			for (int k=0;k<lN;k++){
-				fx[lN*rankrecv+k]=recvbuffer[k];
-			}	
-		
-		MPI_Barrier(MPI_COMM_WORLD);
-		printf("j=%d rank=%d ",j,mpirank);for(int k=0;k<lN;k++) printf("%+.2f%+.2fi ",real(recvbuffer[j]),imag(recvbuffer[j]));printf("\n");
+				int *bin_ind=(int*)calloc(sizeof(int),s);//[k(0)k(1)...k(j-1)(0/1)k(j)...k(s-2)]
 
-		for(int itert0=lN*mpirank;itert0<lN*(mpirank+1);itert0++){
-			indt1=0,indw=0;
-			indt0=itert0;
-			dec2bin(bindt0, s, indt0);
-			
-			bindt0[j]=0.0;
-			for (int jj=0;jj<j+1;jj++){
-				indw+=bindt0[j-jj]*vec2pow[jj];
+			if(j<logp){
+				//communicate
+				int *bin_commrank=(int*)calloc(sizeof(int),logp);
+				dec2bin(bin_commrank, logp, mpirank);
+				bin_commrank[j]=1-bin_commrank[j];
+				int comm_rank=bin2dec(bin_commrank,logp);
+				printf("j=%d, rank=%d, comm_rank=%d\n",j, mpirank,comm_rank);
+				for (int ind=0;ind<lN;ind++){
+					sendbuffer[ind]=fx[lN*mpirank+ind];
+				}
+				MPI_Sendrecv(sendbuffer,lN,MPI_C_DOUBLE_COMPLEX,comm_rank,123,recvbuffer,lN,MPI_C_DOUBLE_COMPLEX,comm_rank,123,MPI_COMM_WORLD,&status );
+				for (int ind=0;ind<lN;ind++){
+					fx[lN*comm_rank+ind]=recvbuffer[ind];
+				}
+
+				for (int ind=lN*mpirank;ind<lN*(mpirank+1);ind++){
+					dec2bin(bin_ind, s, ind);
+					//calculate w
+					std::complex<double> w,t0,t1,x; int indw=0,indt0,indt1;
+					for (int m=0;m<j;m++){
+						indw+=bin_ind[j-1-m]*ipow(2,s-2-m);
+					}
+					w=exp(indw*logomega);
+					//calculate t0 and t1;
+					if (bin_ind[j]==0){indt0=ind;indt1=ind+ipow(2,s-1-j);}
+					else{indt1=ind;indt0=ind-ipow(2,s-1-j);}
+					t0=fx[indt0];t1=fx[indt1];
+					x=w*t1;
+					fx[indt0]=t0+x;fx[indt1]=t0-x;
+				}
+				
+			}else{
+			//no need to communicate
+				for (int ind=lN*mpirank;ind<lN*mpirank+lN/2;ind++){
+					dec2bin(bin_ind, s, ind);
+					//calculate w
+					std::complex<double> w,t0,t1,x; int indw=0,indt0,indt1;
+					for (int m=0;m<j;m++){
+						indw+=bin_ind[j-1-m]*ipow(2,s-2-m);
+					}
+					w=exp(indw*logomega);
+					//calculate t0 and t1;
+					if (bin_ind[j]==0){indt0=ind;indt1=ind+ipow(2,s-1-j);}
+					else{indt1=ind;indt0=ind-ipow(2,s-1-j);}
+					t0=fx[indt0];t1=fx[indt1];
+					x=w*t1;
+					fx[indt0]=t0+x;fx[indt1]=t0-x;
+				}
+
 			}
-			indt0=0;
-			for(int kk=0;kk<s;kk++){
-				indt0+=bindt0[kk]*ipow(2,s-kk-1);
-			}
-			indt1=indt0+ipow(2,s-j-1);
 	
-	//		getind(k%(N/2),s,j, indt0,indt1,indw, binm1, vec2pow);
-	//		for (int ss=0;ss<s;ss++){printf("%d ",binm1[ss]);}
-			w=exp(indw*logomega);
-			t0=fx[indt0];
-			t1=fx[indt1];
-			x=w*t1;
-			fx[indt0]=t0+x;
-			fx[indt1]=t0-x;
-		}
-		}else{
-		for(int k=(lN*mpirank)%(N/2);k<(lN*mpirank)%(N/2)+lN/2;k++){
-			int indt0=0, indt1=0,indw=0;
-			getind(k,s,j, indt0,indt1,indw, binm1, vec2pow);
-
-			w=exp(indw*logomega);
-			t0=fx[indt0];
-			t1=fx[indt1];
-			x=w*t1;
-			fx[indt0]=t0+x;
-			fx[indt1]=t0-x;
-
-		}
-		}
-	
-		
+//		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
 	}
+		printf("rank=%d ",mpirank);for(int k=mpirank*lN;k<(mpirank+1)*lN;k++) printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));printf("\n");
+	
+		if (mpirank==0){
+			int *binm1=(int *) calloc(sizeof(int),s);
+			int *vec2pow=(int *) calloc(sizeof(int),s);
+			for (int k=0;k<s;k++){
+				vec2pow[k]=pow(2,s-k-1);
+			}
+			fastFT_iter(fxcopy,s,N,binm1,vec2pow);
+			printf("fxFFT=");
+			for(int j=0;j<N;j++){
+				printf("%+.2f%+.2fi ",real(fxcopy[j]),imag(fxcopy[j]));
+			}
+			printf("\n");
+			free(binm1);
+			free(vec2pow);
+		}
+
+		/*	
 	printf("rank=%d   ",mpirank);
 	for(int k=lN*mpirank;k<lN*(mpirank+1);k++){
 		printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));
 	}
 	printf("\n");
+*/
 	//	Timer tt;
 //	tt.tic();
 //	naiveFFT(fx,fk,N);
@@ -337,14 +344,10 @@ printf("\n");}
 	*/
 
 
-	free(binm1);
-	free(vec2pow);
 	free(sendbuffer);
 	free(recvbuffer);
-	free(bindt0);
-    free(binrank);
 	free(fx);
-
+	free(fxcopy);
 //	free(fk);
 //	free(fkf);
 
