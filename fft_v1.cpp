@@ -154,7 +154,7 @@ void fastFT_iter(std::complex<double> *fx,int s,int N,int *binm1,
 
 }
 void dec2bin(int *bin, int len, int dec){
-	for(int j=0;j<len;j++){bin[j]=0.0;}
+	for(int j=0;j<len;j++){bin[j]=0;}
 	int k=0;int power;int res=dec;
 	while (res>=1){
 		power=ipow(2,len-k-1);
@@ -223,6 +223,11 @@ int main(int argc, char * argv[]) {
 	std::complex<double> * fxcopy    = (std::complex<double> *) calloc(2*sizeof(double), N	);
 	std::complex<double> * sendbuffer   = (std::complex<double> *) calloc(2*sizeof(double), lN	);
 	std::complex<double> * recvbuffer   = (std::complex<double> *) calloc(2*sizeof(double), lN	);
+	int *binm1=(int *) calloc(sizeof(int),s);
+	int *vec2pow=(int *) calloc(sizeof(int),s);
+	for (int k=0;k<s;k++){
+		vec2pow[k]=pow(2,s-k-1);
+	}
 
 //	std::complex<double> * fx2   = (std::complex<double> *) calloc(2*sizeof(double), N	);
 //	std::complex<double> * fk    = (std::complex<double> *) calloc(2*sizeof(double), N	);
@@ -232,7 +237,17 @@ int main(int argc, char * argv[]) {
 		fxcopy[j]=fx[j];
 	}
 	std::complex<double> logomega =2*M_PI/N*(1i),x,w,t0,t1;
-	
+		
+		if (mpirank==0){
+			fastFT_iter(fxcopy,s,N,binm1,vec2pow);
+			printf("fxFFT=");
+			for(int j=0;j<N;j++){
+				printf("%+.2f%+.2fi ",real(fxcopy[j]),imag(fxcopy[j]));
+			}
+			printf("\n");
+
+		}
+	for(int j=0;j<s;j++){binm1[j]=0;}
 	for(int j=0;j<s;j++){
 				int *bin_ind=(int*)calloc(sizeof(int),s);//[k(0)k(1)...k(j-1)(0/1)k(j)...k(s-2)]
 
@@ -269,44 +284,46 @@ int main(int argc, char * argv[]) {
 				
 			}else{
 			//no need to communicate
-				for (int ind=lN*mpirank;ind<lN*mpirank+lN/2;ind++){
-					dec2bin(bin_ind, s, ind);
-					//calculate w
-					std::complex<double> w,t0,t1,x; int indw=0,indt0,indt1;
-					for (int m=0;m<j;m++){
-						indw+=bin_ind[j-1-m]*ipow(2,s-2-m);
-					}
-					w=exp(indw*logomega);
-					//calculate t0 and t1;
-					if (bin_ind[j]==0){indt0=ind;indt1=ind+ipow(2,s-1-j);}
-					else{indt1=ind;indt0=ind-ipow(2,s-1-j);}
-					t0=fx[indt0];t1=fx[indt1];
-					x=w*t1;
-					fx[indt0]=t0+x;fx[indt1]=t0-x;
-				}
+					int *bin_minind=(int*)calloc(sizeof(int),s);
+					int *bin_maxind=(int*)calloc(sizeof(int),s);
+					int *bin_mink=(int*)calloc(sizeof(int),s-1);
+					int *bin_maxk=(int*)calloc(sizeof(int),s-1);
 
+					dec2bin(bin_minind,s,lN*mpirank);
+					dec2bin(bin_maxind,s,lN*(mpirank+1)-1);
+					std::cout<<"rank="<<mpirank<<"bin_minind="<<lN*mpirank<<"bin_maxind="<<lN*(mpirank+1)-1<<std::endl;
+					for(int m=0;m<s;m++){std::cout<<bin_minind[m]<<" ";}
+					printf("\n");
+					for(int m=0;m<s;m++){std::cout<<bin_maxind[m]<<" ";}
+					printf("\n");
+					for(int kk=0;kk<s;kk++){
+						if(kk<j){bin_mink[kk]=bin_minind[kk];}else if(kk>j){bin_mink[kk-1]=bin_minind[kk];}
+						if(kk<j){bin_maxk[kk]=bin_maxind[kk];}else if(kk>j){bin_maxk[kk-1]=bin_maxind[kk];}
+					}
+					int mink=bin2dec(bin_mink,s-1);
+					int maxk=bin2dec(bin_maxk,s-1);
+					printf("j=%d, mink=%d, maxk=%d\n",j,mink,maxk);
+					for(int k=mink;k<=maxk;k++){
+						int indt0=0, indt1=0,indw=0;
+						getind(k,s,j, indt0,indt1,indw, binm1, vec2pow);
+				//		for (int ss=0;ss<s;ss++){printf("%d ",binm1[ss]);}
+			
+						w=exp(indw*logomega);
+						t0=fx[indt0];
+						t1=fx[indt1];
+						x=w*t1;
+						fx[indt0]=t0+x;
+						fx[indt1]=t0-x;
+				//		printf("j=%d,k=%d,ind1=%d,ind2=%d,indw=%d,logomega=%+f%+fi\n",j,k,indt0,indt1,indw,real(logomega),imag(logomega));
+					}
+						
 			}
 	
 //		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
 	}
 		printf("rank=%d ",mpirank);for(int k=mpirank*lN;k<(mpirank+1)*lN;k++) printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));printf("\n");
-	
-		if (mpirank==0){
-			int *binm1=(int *) calloc(sizeof(int),s);
-			int *vec2pow=(int *) calloc(sizeof(int),s);
-			for (int k=0;k<s;k++){
-				vec2pow[k]=pow(2,s-k-1);
-			}
-			fastFT_iter(fxcopy,s,N,binm1,vec2pow);
-			printf("fxFFT=");
-			for(int j=0;j<N;j++){
-				printf("%+.2f%+.2fi ",real(fxcopy[j]),imag(fxcopy[j]));
-			}
-			printf("\n");
 			free(binm1);
 			free(vec2pow);
-		}
-
 		/*	
 	printf("rank=%d   ",mpirank);
 	for(int k=lN*mpirank;k<lN*(mpirank+1);k++){
