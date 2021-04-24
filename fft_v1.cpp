@@ -149,7 +149,7 @@ void fastFT_iter(std::complex<double> *fx,int s,int N,int *binm1,
 	//		printf("j=%d,k=%d,ind1=%d,ind2=%d,indw=%d,logomega=%+f%+fi\n",j,k,indt0,indt1,indw,real(logomega),imag(logomega));
 		}
 	
-		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
+//		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
 	}
 
 }
@@ -237,8 +237,8 @@ int main(int argc, char * argv[]) {
 		fxcopy[j]=fx[j];
 	}
 	std::complex<double> logomega =2*M_PI/N*(1i),x,w,t0,t1;
-		
-		if (mpirank==0){
+			if (mpirank==0){
+
 			fastFT_iter(fxcopy,s,N,binm1,vec2pow);
 			printf("fxFFT=");
 			for(int j=0;j<N;j++){
@@ -247,7 +247,8 @@ int main(int argc, char * argv[]) {
 			printf("\n");
 
 		}
-	for(int j=0;j<s;j++){binm1[j]=0;}
+		for(int j=0;j<s;j++){binm1[j]=0;}
+
 	for(int j=0;j<s;j++){
 				int *bin_ind=(int*)calloc(sizeof(int),s);//[k(0)k(1)...k(j-1)(0/1)k(j)...k(s-2)]
 
@@ -257,7 +258,7 @@ int main(int argc, char * argv[]) {
 				dec2bin(bin_commrank, logp, mpirank);
 				bin_commrank[j]=1-bin_commrank[j];
 				int comm_rank=bin2dec(bin_commrank,logp);
-				printf("j=%d, rank=%d, comm_rank=%d\n",j, mpirank,comm_rank);
+//				printf("j=%d, rank=%d, comm_rank=%d\n",j, mpirank,comm_rank);
 				for (int ind=0;ind<lN;ind++){
 					sendbuffer[ind]=fx[lN*mpirank+ind];
 				}
@@ -291,18 +292,20 @@ int main(int argc, char * argv[]) {
 
 					dec2bin(bin_minind,s,lN*mpirank);
 					dec2bin(bin_maxind,s,lN*(mpirank+1)-1);
+					/*
 					std::cout<<"rank="<<mpirank<<"bin_minind="<<lN*mpirank<<"bin_maxind="<<lN*(mpirank+1)-1<<std::endl;
 					for(int m=0;m<s;m++){std::cout<<bin_minind[m]<<" ";}
 					printf("\n");
 					for(int m=0;m<s;m++){std::cout<<bin_maxind[m]<<" ";}
 					printf("\n");
+					*/
 					for(int kk=0;kk<s;kk++){
 						if(kk<j){bin_mink[kk]=bin_minind[kk];}else if(kk>j){bin_mink[kk-1]=bin_minind[kk];}
 						if(kk<j){bin_maxk[kk]=bin_maxind[kk];}else if(kk>j){bin_maxk[kk-1]=bin_maxind[kk];}
 					}
 					int mink=bin2dec(bin_mink,s-1);
 					int maxk=bin2dec(bin_maxk,s-1);
-					printf("j=%d, mink=%d, maxk=%d\n",j,mink,maxk);
+//					printf("j=%d, mink=%d, maxk=%d\n",j,mink,maxk);
 					for(int k=mink;k<=maxk;k++){
 						int indt0=0, indt1=0,indw=0;
 						getind(k,s,j, indt0,indt1,indw, binm1, vec2pow);
@@ -314,17 +317,27 @@ int main(int argc, char * argv[]) {
 						x=w*t1;
 						fx[indt0]=t0+x;
 						fx[indt1]=t0-x;
-				//		printf("j=%d,k=%d,ind1=%d,ind2=%d,indw=%d,logomega=%+f%+fi\n",j,k,indt0,indt1,indw,real(logomega),imag(logomega));
 					}
 						
 			}
 	
-//		printf("j=%d ",j);for(int k=0;k<N;k++) printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));printf("\n");
 	}
-		printf("rank=%d ",mpirank);for(int k=mpirank*lN;k<(mpirank+1)*lN;k++) printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));printf("\n");
-			free(binm1);
-			free(vec2pow);
-		/*	
+		for (int ind=0;ind<lN;ind++){
+			sendbuffer[ind]=fx[lN*mpirank+ind];
+		}
+	
+//	printf("rank=%d ",mpirank);for(int k=mpirank*lN;k<(mpirank+1)*lN;k++) printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));printf("\n");
+
+	MPI_Gather(sendbuffer,lN, MPI_C_DOUBLE_COMPLEX, fx,lN,MPI_C_DOUBLE_COMPLEX,0,MPI_COMM_WORLD);
+	if(mpirank==0)
+	{	printf("fx=");
+		for(int j=0;j<N;j++){
+			printf("%+.2f%+.2fi ",real(fx[j]),imag(fx[j]));
+		}
+	}
+	free(binm1);
+	free(vec2pow);
+			/*	
 	printf("rank=%d   ",mpirank);
 	for(int k=lN*mpirank;k<lN*(mpirank+1);k++){
 		printf("%+.2f%+.2fi ",real(fx[k]),imag(fx[k]));
