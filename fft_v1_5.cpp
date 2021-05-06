@@ -1,14 +1,13 @@
 #include <iostream>
 #include <stdio.h>
 #include <math.h> // to use M_PI
-// #include <mpi.h>
+#include <mpi.h>
 #include <complex>
 #include <fftw3.h>
+#include <algorithm> // for min
 
-// g++ -std=c++14 fft_v1_5.cpp -lfftw3
-
-// mpic++ -std=c++14 fftCai.cpp -lfftw3   >?-lm
-// mpiexec -np 2 ./a.out
+// mpic++ -std=c++14 fft_v1_5.cpp -lfftw3   >?-lm
+// mpiexec -np 4 ./a.out
 
 using namespace std::complex_literals;
 
@@ -17,71 +16,18 @@ void fft_serial(std::complex<double> *fx, std::complex<double> *fk, int N, std::
 double get_error(std::complex<double> *fk, fftw_complex *out, int N);
 int my_log2(int N);
 int reverse_bits(int x, int s);
+int get_partner(int rank, int size, int j);
+void fft_mpi(std::complex<double> *fx, std::complex<double> *fk, int N, std::complex<double> *omega_, int rank, int size);
 
 
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
 
-// void fft_mpi(std::complex<double> *fx, std::complex<double> *fk, int N, std::complex<double> *omega_, int rank, int size) {
-//     int s = my_log2(N), p = my_log2(size), q = my_log2(N/size);
-//     int mask, index0, index1, Nlocal = N/size;
-//     std::complex<double> t0, t1, w, x;
-//
-//     std::complex<double> *fxlocal = (std::complex<double> *) malloc(Nlocal* sizeof(std::complex<double>));
-//     std::complex<double> *fxin = (std::complex<double> *) malloc(Nlocal* sizeof(std::complex<double>));
-//
-//     for (int j=0; j<Nlocal; j++) {
-//         fxlocal[j] = fx[rank*Nlocal + j];
-//     }
-//
-//     for (int j=0; j<p; j++) {
-//         MPI_Sendrecv(fxlocal, Nlocal, MPI_DOUBLE_COMPLEX, (rank+2-j)%size, 310,
-//                fxin, Nlocal, MPI_DOUBLE_COMPLEX, (rank-2+j)%size, 310, MPI_COMM_WORLD, status);
-//
-//         for (int k=rank*Nlocal; k<(rank+1)*Nlocal; k++) {
-//             if (k<N/2) {
-//                 t0 = fxlocal[k%Nlocal];
-//                 t1 = fx1[k%Nlocal];
-//
-//                 w = omega_[reverse_bits(k >> s-1-j, s)];
-//                 x = w*t1;
-//
-//                 fxlocal[k%Nlocal] = t0 + x;
-//             }
-//             else {
-//                 t0 = fx1[k%Nlocal];
-//                 t1 = fxlocal[k%Nlocal];
-//
-//                 w = omega_[reverse_bits((k-N/2) >> s-1-j, s)]; // need to change this
-//                 x = w*t1;
-//
-//                 fxlocal[k%Nlocal] = t0 - x;
-//             }
-//         }
-//     }
-//     for (int j=p; j<s; j++) {
-//         for (int k=rank*Nlocal; k<(rank+1)*Nlocal; k++) {
-//
-//         }
-//     }
-//
-//
-//
-//
-//
-//     MPI_Gather(fxlocal, Nlocal, MPI_DOUBLE_COMPLEX, fk, Nlocal,
-//                MPI_DOUBLE_COMPLEX, 0, MPI_COMM_WORLD);
-// }
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
 
-
-
-int main(int argc, char const *argv[]) {
-    // MPI_Init(&argc, &argv);
-    //
-    // int rank, size;
-    // MPI_Status status;
-    // MPI_Comm_rank(comm, &rank);
-    // MPI_Comm_size(comm, &size);
-
-    int N = 16;
+    int N = 1024;
 
     std::complex<double> *omega_ = (std::complex<double> *) malloc(N* sizeof(std::complex<double>));
 
@@ -92,6 +38,7 @@ int main(int argc, char const *argv[]) {
 
     std::complex<double> *fx = (std::complex<double> *) malloc(N* sizeof(std::complex<double>));
     std::complex<double> *fx_copy = (std::complex<double> *) malloc(N* sizeof(std::complex<double>));
+    std::complex<double> *fx_copy2 = (std::complex<double> *) malloc(N* sizeof(std::complex<double>));
     std::complex<double> *fk = (std::complex<double> *) calloc(N, sizeof(std::complex<double>));
     std::complex<double> *fk2 = (std::complex<double> *) calloc(N, sizeof(std::complex<double>));
     std::complex<double> *fk3 = (std::complex<double> *) calloc(N, sizeof(std::complex<double>));
@@ -100,10 +47,11 @@ int main(int argc, char const *argv[]) {
     for (int j=0; j<N; j++) {
         fx[j] = sin(2*j)+cos(3*j)*1i;
         fx_copy[j] = fx[j];
+        fx_copy2[j] = fx[j];
     }
 
-    dft_naive(fx, fk, N);
-    fft_serial(fx_copy, fk2, N, omega_);
+    // do MPI version
+    fft_mpi(fx_copy2, fk3, N, omega_, rank, size);
 
     // do fftw version, page 3 of http://www.fftw.org/fftw3.pdf
     fftw_complex *in = (fftw_complex*) fftw_malloc(sizeof(fftw_complex) * N);
@@ -115,11 +63,15 @@ int main(int argc, char const *argv[]) {
         in[j][1] = cos(3*j);
     }
 
-    fftw_execute(p);
+    if (rank == 0) {
+        dft_naive(fx, fk, N);
+        fft_serial(fx_copy, fk2, N, omega_);
+        fftw_execute(p);
 
-    printf("error for dft_naive = %f \n", get_error(fk,out,N));
-    printf("error for fft_serial = %f \n", get_error(fk2,out,N));
-    printf("error for fft_mpi = %f \n", get_error(fk3,out,N));
+        printf("error for dft_naive = %f \n", get_error(fk,out,N));
+        printf("error for fft_serial = %f \n", get_error(fk2,out,N));
+        printf("error for fft_mpi = %f \n", get_error(fk3,out,N));
+    }
 
     fftw_destroy_plan(p);
     fftw_free(in);
@@ -127,10 +79,12 @@ int main(int argc, char const *argv[]) {
     free(omega_);
     free(fx);
     free(fx_copy);
+    free(fx_copy2);
     free(fk);
     free(fk2);
     free(fk3);
 
+    MPI_Finalize();
     return 0;
 }
 
@@ -183,6 +137,16 @@ int reverse_bits(int x, int s) {
 
 //------------------------------------------------------------------------------
 
+int get_partner(int rank, int size, int j) {
+    int p = my_log2(size);
+    if (1 & (rank >> (p-1-j)))
+        return (rank - (size >> (j+1)));
+    else
+        return (rank + (size >> (j+1)));
+}
+
+//------------------------------------------------------------------------------
+
 void fft_serial(std::complex<double> *fx, std::complex<double> *fk, int N, std::complex<double> *omega_) {
     int s = my_log2(N), index0, index1;
     int mask; // for inserting 0 or 1 in the bitstring
@@ -209,5 +173,76 @@ void fft_serial(std::complex<double> *fx, std::complex<double> *fk, int N, std::
     // rearrange output to give correct answer
     for (int k=0; k<N; k++) {
         fk[k] = fx[reverse_bits(k,s)];
+    }
+}
+
+//------------------------------------------------------------------------------
+
+void fft_mpi(std::complex<double> *fx, std::complex<double> *fk, int N, std::complex<double> *omega_, int rank, int size) {
+    MPI_Status status;
+    int s = my_log2(N), p = my_log2(size);
+    int mask, index0, index1, partner, k_global, Nlocal = N/size;
+    std::complex<double> t0, t1, w, x;
+
+    std::complex<double> *fxlocal = (std::complex<double> *) malloc(Nlocal* sizeof(std::complex<double>));
+    std::complex<double> *fxin = (std::complex<double> *) malloc(Nlocal* sizeof(std::complex<double>));
+
+    for (int j=0; j<Nlocal; j++) {
+        fxlocal[j] = fx[rank*Nlocal + j];
+    }
+
+    // part with communication
+    for (int j=0; j<p; j++) {
+        // processor to communicate with
+        partner = get_partner(rank, size, j);
+
+        MPI_Sendrecv(fxlocal, Nlocal, MPI_DOUBLE_COMPLEX, partner, 310,
+               fxin, Nlocal, MPI_DOUBLE_COMPLEX, partner, 310, MPI_COMM_WORLD, &status);
+
+        for (int k=0; k<Nlocal; k++) {
+            index0 = k + std::min(rank,partner)*Nlocal;
+            w = omega_[reverse_bits(index0 >> s-1-j, s)];
+
+            if (partner>rank) {
+                t0 = fxlocal[k];
+                t1 = fxin[k];
+                x = w*t1;
+                fxlocal[k] = t0 + x;
+            }
+            else {
+                t0 = fxin[k];
+                t1 = fxlocal[k];
+                x = w*t1;
+                fxlocal[k] = t0 - x;
+            }
+        }
+    }
+
+    // part without communication
+    for (int j=p; j<s; j++) {
+        mask = (1 << (s-1-j)) - 1;
+        for (int k=0; k<Nlocal/2; k++) {
+            k_global = k + rank*Nlocal/2;
+
+            index0 = ((k_global & ~mask) << 1) | (k_global & mask);
+            index1 = ((k_global & ~mask) << 1) | (k_global & mask) + (1 << (s-1-j));
+
+            t0 = fxlocal[index0 % Nlocal];
+            t1 = fxlocal[index1 % Nlocal];
+
+            w = omega_[reverse_bits(index0 >> s-1-j, s)];
+            x = w*t1;
+
+            fxlocal[index0 % Nlocal] = t0 + x;
+            fxlocal[index1 % Nlocal] = t0 - x;
+        }
+    }
+
+    MPI_Gather(fxlocal, Nlocal, MPI_DOUBLE_COMPLEX, fx, Nlocal,
+               MPI_DOUBLE_COMPLEX, 0, MPI_COMM_WORLD);
+    if (rank == 0) {
+        for (int k=0; k<N; k++) {
+            fk[k] = fx[reverse_bits(k,s)];
+        }
     }
 }
